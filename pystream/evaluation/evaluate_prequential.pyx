@@ -7,6 +7,7 @@ import time
 from .performance_statistics import PerformanceStats
 from collections import deque
 import io
+import logging
 import shutil
 
 
@@ -78,7 +79,7 @@ cdef class EvaluatePrequential:
         acc_mean = self.stats['acc_history'][-1]
         n_nodes, splits = self._alg_specific_stats()
         size = self._algorithm.memory_size()
-        print('({}) i: {} | current_acc: {:.4f} | mean_acc: {:.4f}'
+        logging.info('({}) i: {} | current_acc: {:.4f} | mean_acc: {:.4f}'
               ' | time: {:.4f}s | nodes: {} | splits: {}'
               ' | memory: {} bytes'.format(self._name, i, current_acc, acc_mean,
                                            elapsed_time, n_nodes, splits,
@@ -110,22 +111,6 @@ cdef class EvaluatePrequential:
         with open('{}_cm.txt'.format(fname), 'w') as f:
             f.write('linha: real | coluna: predito\n')
             f.write(np.array_str(self.stats['cm']))
-
-    # cpdef _compute_le_acc(self, y, yhat, window_size):
-    #     cdef:
-    #         double current_acc
-    #
-    #     self.last_scores[self.last_pos] = 1 if yhat == y else 0
-    #     self.last_pos = (self.last_pos + 1) % window_size
-    #
-    #     # accuracy on last elements
-    #     if self.FIRST_CYCLE and self.last_pos == 0:
-    #         self.FIRST_CYCLE = False
-    #     if self.FIRST_CYCLE:
-    #         current_acc = np.mean(self.last_scores[:self.last_pos])
-    #     else:
-    #         current_acc = np.mean(self.last_scores)
-    #     return current_acc
 
     cpdef _compute_le_acc(self, y, yhat, window_size):
         cdef:
@@ -186,12 +171,12 @@ cdef class EvaluatePrequential:
         stats['n'] += 1
         stats['instances_seen_per_class'][y] += 1
 
-    def train_test_prequential_cm(self, stream, bint debug=False,
+    def train_test_prequential_entropy(self, stream, bint debug=False,
                                   int window_size=100, int frequency=1000,
-                                  log_file=None):
+                                  log_file=None, bint active=True, double z=1.645, str method="entropy"):
         cdef:
             np.ndarray X
-            int y, row_i, yhat, weight
+            int y, row_i, yhat, weight, train_predicted, train_truelabel, stream_size
             double start_time, elapsed_time, current_acc
 
         self._elements_seen = 0
@@ -200,34 +185,62 @@ cdef class EvaluatePrequential:
         self.last_pos = 0
         self.FIRST_CYCLE = True
 
+        train_predicted = 0
+        train_truelabel = 0
+        hits = 0
+        miss = 0
+        stream_size = 45311
+
         # learn first example
         row_i, (X, y) = next(stream)
 
         # start computing time after loading dataset
         start_time = time.time()
         weight = 1
-        self._algorithm.train(X, y, weight)
+        self._algorithm.train(X, y, weight, 1)
+        train_truelabel +=1
+
         # learn from other examples
         for row_i, (X, y) in stream:
             yhat = self._algorithm.predict(X)
-            self._update_pred_stats(y, yhat)
-            self._compute_le_acc(y, yhat, window_size)
-            elapsed_time = time.time() - start_time
+            if y == yhat:
+              hits+=1
+            else:
+              miss+=1
 
-            if row_i % frequency == 0 and (debug or log_file):
-                if debug:
-                    self._print_debug(row_i, elapsed_time, self._current_acc)
-                if log_file:
-                    self._update_log(row_i, elapsed_time, self._current_acc)
+            if active:
+              #If the uncertainty value is lower than the threshold (z), returns true and continues with the prediction
+              if self._algorithm.pre_train(X, yhat, weight, z, method):
+                self._update_pred_stats(y, yhat)
+                self._compute_le_acc(y, yhat, window_size)
+                elapsed_time = time.time() - start_time
+                train_predicted+=1
+              
+              #If the uncertainty value is higher than the threshold, returns false and queries the oracle
+              else:
+                self._update_pred_stats(y, yhat)
+                self._compute_le_acc(y, yhat, window_size)
+                elapsed_time = time.time() - start_time
+                self._algorithm.train(X, y, weight, row_i)
+                train_truelabel+=1
 
-            self._algorithm.train(X, y, weight)
+            else:
+              self._update_pred_stats(y, yhat)
+              self._compute_le_acc(y, yhat, window_size)
+              elapsed_time = time.time() - start_time
+              self._algorithm.train(X, y, weight, row_i)
+              train_truelabel+=1
+
         elapsed_time = time.time() - start_time
         stats = self.stats
         stats['train_time'] = elapsed_time
-        if log_file:
-            self._update_log(row_i, elapsed_time, self._current_acc)
-            self._write_log(log_file, window_size)
-            self._write_cm_log(log_file)
+        stats['train_predicted'] = train_predicted
+        stats['train_truelabel'] = train_truelabel
+        stats['hits'] = hits
+        stats['miss'] = miss
+        logging.info(f'Treino com conhecimento: {train_predicted}')
+        logging.info(f'Treino com consulta: {train_truelabel}')
+
 
     def train_test_prequential_no_partial_cm(self, stream, bint debug=False,
                                                int window_size=100,

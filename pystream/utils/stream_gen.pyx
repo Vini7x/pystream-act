@@ -1,6 +1,7 @@
 import pandas as pd
 cimport numpy as np
 import time
+import logging
 
 
 def instance_gen(data_or_fname, dict dtype, chunksize=None):
@@ -51,11 +52,11 @@ def instance_gen_log(data_or_fname, dict dtype, chunksize=None):
 
     if chunksize is None:
         chunksize = 500_000
-    print(f'{str(time.time())[:14].replace(".", "")},started load_dataset')
+    logging.info(f'{str(time.time())[:14].replace(".", "")},started load_dataset')
     stream = pd.read_csv(data_or_fname, dtype=dtype,
                          iterator=True, chunksize=chunksize)
     for chunk in stream:
-        print(f'{str(time.time())[:14].replace(".", "")},ended load_dataset')
+        logging.info(f'{str(time.time())[:14].replace(".", "")},ended load_dataset')
         for row in chunk.values:
             yield i, (row[:-1], int(row[-1]))
             i += 1

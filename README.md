@@ -1,6 +1,7 @@
 # pystream
 
-An MOA-based implementation for data stream classification in Python/Cython
+An MOA-based implementation for data stream classification in Python/Cython integrated
+with Stream Based Active Learning Techniques.
 
 ## Includes:
 
@@ -19,15 +20,18 @@ An MOA-based implementation for data stream classification in Python/Cython
 
 ## To run:
   - pip install -r requirements.txt --user
-  - python setup.py build_ext --inplace (builds Cython extensions and creates .so files)
-  - python setup.py install --user
-  - Follow test.py file
+  - chmod +x compile.sh
+  - ./compile.sh (builds Cython extensions, creates .so files and installs the library inplace)
+  - Follow tests/test.py file
 
 ## TODO:
   - Fully document code
   - Improve Cython implementation
   - Add more algorithms
   - Provide a better usage manual
+  - Cleanup code better
 
-## Note
+## Notes
   - Needs cython to compile code when installing
+  - The datasets files can be found in [here](https://drive.google.com/drive/folders/17Met-0ccrONsFyFISy-A5eAtw6xp_bfR?usp=sharing), just download
+    the datasets.tar.gz file and extract the entire datasets directory inside the tests directory before running test.py

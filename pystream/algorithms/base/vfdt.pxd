@@ -18,7 +18,7 @@ cdef class Node:
         bint _only_binary_splits
         public object _name
         int _n_attrs, _n_classes
-        public double _n,  _last_n
+        public double _n,  _last_n, _bgst_entropy, count, queried
         str _prediction_type
         public list _attr_estimators
         public np.ndarray _dist
@@ -123,7 +123,7 @@ cdef class VFDT:
     cdef:
         object _attr_types
         int _n_attrs, _n_classes, _grace_period
-        double _split_confidence, _tiebreaker, _delta, _split_crit_range
+        double _split_confidence, _tiebreaker, _delta, _split_crit_range, _counter, _queried
         str _prediction_type, _split_criterion
         object _numeric_estimator
         object _rank_function
@@ -152,7 +152,11 @@ cdef class VFDT:
 
     cdef void _reset_leaf(self, Node leaf)
 
-    cdef void _train(self, np.ndarray X, int y, int weight=*)
+    cdef void _train(self, np.ndarray X, int y, int weight=*, int row_number=*)
+
+    cdef _pre_train(self, np.ndarray X, int y, int weight=*, double z=*, str method=?)
+
+    cdef void _pre_learn_from_instance(self, np.ndarray X, int y, int weight=*)
 
     cdef int _predict(self, np.ndarray X)
 

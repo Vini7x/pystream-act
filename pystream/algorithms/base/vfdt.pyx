@@ -7,6 +7,8 @@ from libc.math cimport sqrt, log, log2, isfinite, INFINITY
 
 import numpy as np
 import weakref
+import sys
+import logging as logg
 from sys import getsizeof
 from random import sample
 from typing import Iterable, Optional
@@ -15,8 +17,9 @@ from numeric_estimators import ClassGaussianEstimator
 from nominal_counters import NominalCounter
 from statistics.tree_stats import TreeStats
 from statistics.tree_stats cimport TreeStats
+import logging
 
-
+#logg.basicConfig(filename='example.log',level=logg.DEBUG)
 # type definitions
 Distribution = Iterable[float]
 
@@ -53,6 +56,9 @@ cdef class Node:
         self._prediction_type = prediction_type
         self._only_binary_splits = only_binary_splits
         self._m_attrs = m_attrs
+        self._bgst_entropy = 0
+        self.count = 0
+        self.queried = 0
 
         if parent:
             self._parent = weakref.ref(parent)
@@ -228,13 +234,10 @@ cdef class Node:
             self._nb_update_accs(X, y, weight)
         else:
             self._mc_update_accs(X, y, weight)
-
         # update numeric estimators
         self._update_attr_estimators(X, y, weight)
-
         # add y to node count
         self._dist[y] += weight
-
         # increase the number of elements seen
         self._n += weight
 
@@ -245,7 +248,7 @@ cdef class Node:
         cdef:
             np.ndarray clean_distribution, probs
             double tot, p, entropy, v
-
+            #in case you want the distribution before the split, comment this
         clean_distribution = self.clean_distribution
         tot = self._n - self._n_from_split
         entropy = 0
@@ -427,13 +430,10 @@ cdef class Node:
 
         clean_distribution = self.clean_distribution
         tot = self._n - self._n_from_split
-        if tot == 0:
-            return 0
         gini = 1
         for v in clean_distribution:
-            if v != 0:
-                p = v / tot
-                gini -= p * p
+            p = v / tot
+            gini -= p * p
         return gini
 
     cdef PossibleSplit _gini_continuous(self, int attr):
@@ -774,12 +774,11 @@ cdef class Node:
         return 2
 
     cdef void clean_memory(self):
-        PyObject_DelAttr(self, '_dropped_attrs')
-        PyObject_DelAttr(self, '_exhausted_attrs')
         PyObject_DelAttr(self, '_attr_estimators')
         PyObject_DelAttr(self, '_dist_from_split')
         PyObject_DelAttr(self, '_n_from_split')
         PyObject_DelAttr(self, '_dist')
+
 
     cdef np.ndarray mc_predict_proba(self):
         cdef:
@@ -864,7 +863,7 @@ cdef class Node:
         if not self._estimators_empty:
             for y in range(self._n_classes):
                 for x, estimator in zip(X, self._attr_estimators):
-                    probs[y] += log(estimator.get_proba(x, y))
+                    probs[y] *= log(estimator.get_proba(x, y))
 
             # scale prob output
             tot = 0
@@ -1042,7 +1041,7 @@ cdef class VFDT:
                  bint clean_after_split=True,
                  m_attrs: Optional[int]=None,
                  object node_class=Node):
-
+        #str prediction_type='adaptive',
         # assert issubclass(numeric_estimator, NumericEstimatorABC)
         assert prediction_type in {'mc', 'nb', 'adaptive'}
         assert split_criterion in {'infogain', 'gini'}
@@ -1078,6 +1077,8 @@ cdef class VFDT:
         self._next_name = 1
         self._leaves = {0: self._root}
         self._stats = TreeStats(self._n_classes)
+        self._counter = 0
+        self._queried = 0
 
     cdef double _memory_size(self):
         """
@@ -1140,6 +1141,7 @@ cdef class VFDT:
         self._stats['n_nodes'] += new_nodes
         self._stats['n_leaves'] += new_nodes - 1
 
+
     cdef Node _sort_to_leaf(self, np.ndarray X):
         cdef Node node
 
@@ -1201,7 +1203,75 @@ cdef class VFDT:
     cdef void _reset_leaf(self, Node leaf):
         leaf._reset()
 
-    cdef void _train(self, np.ndarray X, int y, int weight=1):
+    cdef _pre_train(self, np.ndarray X, int y, int weight=1, double z=0, str method="entropy"):
+        cdef:
+            Node leaf
+        leaf = self._sort_to_leaf(X)
+
+        if method == "entropy":
+          if leaf.entropy() >= z or leaf.entropy() == 0:
+            return False
+          else:
+            return True
+
+        elif method == "budget_entropy":
+          self._counter +=1
+          if self._counter >= 1000:
+            self._counter = 0
+            self._queried = 0
+
+          if (leaf.entropy() >= z or leaf.entropy() == 0) and self._queried <= 200:
+            self._queried +=1;
+            return False
+          else:
+            return True
+
+        elif method == "bgst_entropy":
+          leaf.count +=1
+          if leaf.count >= 1000:
+            leaf.count = 0
+            leaf._bgst_entropy = 0
+
+          #if the uncertainty is higher than the last one, query it
+          if (leaf._bgst_entropy > 0 and leaf.entropy() >= leaf._bgst_entropy-0.1) or (leaf.entropy() >= 0 and leaf._bgst_entropy  == 0):
+            if leaf._bgst_entropy < leaf.entropy():
+              leaf._bgst_entropy = leaf.entropy()
+            return False
+          else:
+            return True
+
+        elif method == "gini":
+          #if leaf.count >= 500:
+          #sys.exit(0)
+
+          n_class = len(leaf._dist)
+          n_seen  = sum(leaf._dist)
+          logging.info(leaf._dist)
+          logging.info("Classes ", n_class)
+          logging.info("Vistos ", n_seen)
+          if n_seen == 0:
+            return False
+
+          probs = []
+          for i in range(0, n_class):
+            probs.append(leaf._dist[i]/n_seen)
+          logging.info(probs)
+          logging.info("Gini", (1 - sum(np.power(probs,2))))
+          if (1 - sum(np.power(probs,2))) >= z or (1 - sum(np.power(probs,2))) == 0:
+            return False
+          else:
+            return True
+
+
+    cdef void _pre_learn_from_instance(self, np.ndarray X, int y, int weight=1):
+      cdef:
+          Node leaf
+      if weight == 0:
+          return
+      leaf = self._sort_to_leaf(X)
+      leaf.learn_from_instance(X, y, weight)
+
+    cdef void _train(self, np.ndarray X, int y, int weight=1, int row_number=1):
         cdef:
             Node leaf
             double gp, current_n, last_n, hb
@@ -1212,7 +1282,6 @@ cdef class VFDT:
             return
 
         leaf = self._sort_to_leaf(X)
-
         leaf.learn_from_instance(X, y, weight)
         # all attributes were exhausted for that leaf
 
@@ -1241,11 +1310,17 @@ cdef class VFDT:
                     if self._can_split(rank, hb, leaf):
                         split = rank[0]
                         self._split_leaf(split, leaf)
+                        logg.debug('pode splittar HB: %s \n',hb)
                         # Just delete the estimators to free up some memory
                         if self._clean_after_split:
                             leaf.clean_memory()
+
                     elif self._drop_poor_attrs:
-                        leaf._drop_poor_attrs_func(rank, hb)
+                      leaf._drop_poor_attrs_func(rank, hb)
+                      logg.debug('Não pode splittar elif HB: %s',hb)
+                      logg.debug('Linha: %s',row_number)
+                      logg.debug('Atributos: %s', str(X))
+                      logg.debug('drop_poor_attrs: %s \n', str(rank))
 
     cdef int _predict(self, np.ndarray X):
         cdef:
@@ -1253,6 +1328,7 @@ cdef class VFDT:
             int yhat
 
         leaf = self._sort_to_leaf(X)
+
         if self._prediction_type == 'adaptive':
             yhat = leaf.adaptive_predict(X)
         elif self._prediction_type == 'nb':
@@ -1310,8 +1386,14 @@ cdef class VFDT:
     def memory_size(self):
         return self._memory_size()
 
-    def train(self, np.ndarray X, int y, int weight=1):
+    def train(self, np.ndarray X, int y, int weight=1, int row_number=1):
         return self._train(X, y, weight)
+
+    def pre_train(self, np.ndarray X, int y, int weight=1, double z=0, str method="entropy"):
+      return self._pre_train(X, y, weight,z, method)
+
+    def pre_learn_from_instance(self, np.ndarray X, int y, int weight=1):
+      return self._pre_learn_from_instance(X, y, weight)
 
     def predict(self, np.ndarray X):
         return self._predict(X)

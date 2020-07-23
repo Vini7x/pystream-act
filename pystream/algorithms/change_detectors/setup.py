@@ -1,5 +1,6 @@
 def configuration(parent_package='',top_path=None):
     import os
+    from os.path import join
 
     import numpy
     from numpy.distutils.misc_util import Configuration
@@ -9,17 +10,12 @@ def configuration(parent_package='',top_path=None):
     if os.name == 'posix':
         libs.append('m')
 
-    config = Configuration('evaluation', parent_package, top_path)
+    config = Configuration('change_detectors', parent_package, top_path)
 
     dirs = [numpy.get_include(), '.']
 
-    config.add_extension(name='evaluate_prequential',
-                         sources=['evaluate_prequential.pyx'],
-                         libraries=libs,
-                         include_dirs=dirs)
-
-    config.add_extension(name='performance_statistics',
-                         sources=['performance_statistics.pyx'],
+    config.add_extension(name='adwin',
+                         sources=['adwin.pyx'],
                          libraries=libs,
                          include_dirs=dirs)
 
